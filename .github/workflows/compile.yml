@@ -1,46 +1,92 @@
-name: ESP8266 Build Compiler
+name: ESP8266 Bulut Derleyici
 
 on:
-  workflow_dispatch: # Manuel tetikleme için
+  workflow_dispatch:
     inputs:
       sketch_code:
-        description: 'Arduino Kodunu Buraya Yapıştırın'
+        description: 'Arduino/ESP8266 Kodu'
         required: true
-        default: 'void setup() { pinMode(2, OUTPUT); } void loop() { digitalWrite(2, HIGH); delay(500); digitalWrite(2, LOW); delay(500); }'
-      board:
-        description: 'Kart Tipi'
+      libraries:
+        description: 'Kütüphaneler (Virgülle ayırın)'
+        required: false
+        default: ''
+      board_type:
+        description: 'Kart Modeli (FQBN)'
         required: true
-        default: 'esp8266:esp8266:nodemcuv2' # Yaygın kullanılan kart
+        default: 'esp8266:esp8266:nodemcuv2'
 
 jobs:
-  build:
+  compile:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v3
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Install Arduino CLI
+      - name: Arduino CLI Kur
         run: |
           curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
-          echo "/home/runner/bin" >> $GITHUB_PATH
+          echo "$GITHUB_WORKSPACE/bin" >> $GITHUB_PATH
 
-      - name: Install ESP8266 Core
+      - name: ESP8266 Çekirdek Kurulumu
         run: |
-          arduino-cli core update-index --additional-urls https://arduino.esp8266.com/stable/package_esp8266com_index.json
-          arduino-cli core install esp8266:esp8266 --additional-urls https://arduino.esp8266.com/stable/package_esp8266com_index.json
+          ./bin/arduino-cli core update-index --additional-urls https://arduino.esp8266.com/stable/package_esp8266com_index.json
+          ./bin/arduino-cli core install esp8266:esp8266 --additional-urls https://arduino.esp8266.com/stable/package_esp8266com_index.json
 
-      - name: Create Sketch File
+      - name: Kütüphaneleri Kur (Gelişmiş Strateji)
         run: |
-          mkdir -p MyProject
-          echo "${{ github.event.inputs.sketch_code }}" > MyProject/MyProject.ino
+          LIBS="${{ github.event.inputs.libraries }}"
+          if [ ! -z "$LIBS" ]; then
+            echo "$LIBS" | tr ',' '\n' | while read lib; do
+              trim_lib=$(echo "$lib" | xargs)
+              if [ ! -z "$trim_lib" ]; then
+                echo "--- İşleniyor: $trim_lib ---"
+                
+                # Sık kullanılan kütüphane eşleşmeleri
+                if [[ "$trim_lib" == "DHT" ]]; then
+                  ./bin/arduino-cli lib install "DHT sensor library"
+                  ./bin/arduino-cli lib install "Adafruit Unified Sensor"
+                  continue
+                fi
 
-      - name: Compile Sketch
+                # 1. Deneme: Doğrudan kurulum
+                if ./bin/arduino-cli lib install "$trim_lib"; then
+                  echo "$trim_lib kuruldu."
+                else
+                  # 2. Deneme: Arama yapıp tırnaksız ismi alma
+                  SEARCH_NAME=$(./bin/arduino-cli lib search "$trim_lib" --format text | grep "Name:" | head -n 1 | cut -d' ' -f2- | tr -d '"' | xargs)
+                  if [ ! -z "$SEARCH_NAME" ]; then
+                    ./bin/arduino-cli lib install "$SEARCH_NAME"
+                  fi
+                fi
+              fi
+            done
+          fi
+
+      - name: Sketch Hazırla (Python Güvenli Yazım)
+        shell: python
+        env:
+          SKETCH_INPUT: ${{ github.event.inputs.sketch_code }}
         run: |
-          arduino-cli compile --fqbn ${{ github.event.inputs.board }} MyProject --output-dir ./build
+          import os
+          content = os.environ.get('SKETCH_INPUT', '')
+          os.makedirs('MySketch', exist_ok=True)
+          with open('MySketch/MySketch.ino', 'w', encoding='utf-8') as f:
+              f.write(content)
 
-      - name: Upload Binary as Artifact
-        uses: actions/upload-artifact@v3
+      - name: Derle
+        run: |
+          mkdir -p output
+          # ESP8266 için derleme (build.flash_mode genellikle qio veya dio olur)
+          ./bin/arduino-cli compile --fqbn ${{ github.event.inputs.board_type }} MySketch --output-dir ./output
+
+      - name: Binary Dosyasını Paketle (Artifact)
+        run: |
+          # ESP8266'da genellikle tek bir .bin dosyası oluşur.
+          # GitHub Artifact'i ZIP olarak saklar, Android tarafında Unzip yapmalısın.
+          zip -j esp8266-firmware.zip output/*.bin
+
+      - name: Artifact Olarak Yayınla
+        uses: actions/upload-artifact@v4
         with:
           name: esp8266-firmware
-          path: ./build/*.bin
+          path: esp8266-firmware.zip
