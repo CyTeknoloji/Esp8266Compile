@@ -10,6 +10,9 @@ on:
         description: 'Kütüphaneler (Virgülle ayırın)'
         required: false
         default: ''
+      library_files:
+        description: 'Uygulamadan zip kütüphaneler (JSON)'
+        required: false
       board_type:
         description: 'Kart Modeli (FQBN)'
         required: true
@@ -40,19 +43,16 @@ jobs:
               trim_lib=$(echo "$lib" | xargs)
               if [ ! -z "$trim_lib" ]; then
                 echo "--- İşleniyor: $trim_lib ---"
-                
-                # Sık kullanılan kütüphane eşleşmeleri
+
                 if [[ "$trim_lib" == "DHT" ]]; then
                   ./bin/arduino-cli lib install "DHT sensor library"
                   ./bin/arduino-cli lib install "Adafruit Unified Sensor"
                   continue
                 fi
 
-                # 1. Deneme: Doğrudan kurulum
                 if ./bin/arduino-cli lib install "$trim_lib"; then
                   echo "$trim_lib kuruldu."
                 else
-                  # 2. Deneme: Arama yapıp tırnaksız ismi alma
                   SEARCH_NAME=$(./bin/arduino-cli lib search "$trim_lib" --format text | grep "Name:" | head -n 1 | cut -d' ' -f2- | tr -d '"' | xargs)
                   if [ ! -z "$SEARCH_NAME" ]; then
                     ./bin/arduino-cli lib install "$SEARCH_NAME"
@@ -61,6 +61,29 @@ jobs:
               fi
             done
           fi
+
+      - name: Uygulamadan gelen kütüphane zip dosyaları
+        env:
+          LIBRARY_FILES: ${{ github.event.inputs.library_files }}
+        run: |
+          python3 <<'PY'
+          import os, json, base64, zipfile
+          from io import BytesIO
+          raw = os.environ.get("LIBRARY_FILES", "")
+          if not raw.strip():
+              print("library_files bos, atlaniyor")
+          else:
+              libs = os.path.expanduser("~/Arduino/libraries")
+              os.makedirs(libs, exist_ok=True)
+              for item in json.loads(raw):
+                  name = (item.get("name") or "CustomLib").strip()
+                  data = base64.b64decode(item.get("zip") or "")
+                  root = os.path.join(libs, name)
+                  os.makedirs(root, exist_ok=True)
+                  with zipfile.ZipFile(BytesIO(data)) as zf:
+                      zf.extractall(root)
+                  print("Installed", name)
+          PY
 
       - name: Sketch Hazırla (Python Güvenli Yazım)
         shell: python
@@ -76,13 +99,10 @@ jobs:
       - name: Derle
         run: |
           mkdir -p output
-          # ESP8266 için derleme (build.flash_mode genellikle qio veya dio olur)
           ./bin/arduino-cli compile --fqbn ${{ github.event.inputs.board_type }} MySketch --output-dir ./output
 
       - name: Binary Dosyasını Paketle (Artifact)
         run: |
-          # ESP8266'da genellikle tek bir .bin dosyası oluşur.
-          # GitHub Artifact'i ZIP olarak saklar, Android tarafında Unzip yapmalısın.
           zip -j esp8266-firmware.zip output/*.bin
 
       - name: Artifact Olarak Yayınla
