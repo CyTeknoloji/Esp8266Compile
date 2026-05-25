@@ -38,17 +38,28 @@ jobs:
       - name: Kütüphaneleri Kur (Gelişmiş Strateji)
         run: |
           LIBS="${{ github.event.inputs.libraries }}"
+          echo "Uygulamadan gelen kutuphane listesi: [${LIBS:-bos}]"
           if [ ! -z "$LIBS" ]; then
             echo "$LIBS" | tr ',' '\n' | while read lib; do
               trim_lib=$(echo "$lib" | xargs)
               if [ ! -z "$trim_lib" ]; then
                 echo "--- İşleniyor: $trim_lib ---"
 
-                if [[ "$trim_lib" == "DHT" ]]; then
-                  ./bin/arduino-cli lib install "DHT sensor library"
-                  ./bin/arduino-cli lib install "Adafruit Unified Sensor"
-                  continue
-                fi
+                trim_lower=$(echo "$trim_lib" | tr '[:upper:]' '[:lower:]')
+                case "$trim_lower" in
+                  *dht*) ./bin/arduino-cli lib install "DHT sensor library" || true; ./bin/arduino-cli lib install "Adafruit Unified Sensor" || true; continue ;;
+                  *adafruit_gfx*|*gfx*) ./bin/arduino-cli lib install "Adafruit GFX Library" || true; ./bin/arduino-cli lib install "Adafruit BusIO" || true; continue ;;
+                  *adafruit_ssd*) ./bin/arduino-cli lib install "Adafruit SSD1306" || true; ./bin/arduino-cli lib install "Adafruit BusIO" || true; continue ;;
+                  *servo*|*varspeed*) ./bin/arduino-cli lib install "Servo" || true; continue ;;
+                  *mfrc*) ./bin/arduino-cli lib install "MFRC522" || true; continue ;;
+                  *liquidcrystal*) ./bin/arduino-cli lib install "LiquidCrystal I2C" || true; continue ;;
+                  *arduinojson*) ./bin/arduino-cli lib install "ArduinoJson" || true; continue ;;
+                  *pubsub*) ./bin/arduino-cli lib install "PubSubClient" || true; continue ;;
+                  *tinygps*) ./bin/arduino-cli lib install "TinyGPSPlus" || true; continue ;;
+                  *softwareserial*) ./bin/arduino-cli lib install "EspSoftwareSerial" || true; continue ;;
+                  *espasync*) ./bin/arduino-cli lib install "ESP Async WebServer" || true; ./bin/arduino-cli lib install "ESPAsyncTCP" || true; continue ;;
+                  *audio*|*esp8266audio*) ./bin/arduino-cli lib install "ESP8266Audio" || true; continue ;;
+                esac
 
                 if ./bin/arduino-cli lib install "$trim_lib"; then
                   echo "$trim_lib kuruldu."
@@ -67,7 +78,7 @@ jobs:
           LIBRARY_FILES: ${{ github.event.inputs.library_files }}
         run: |
           python3 <<'PY'
-          import os, json, base64, zipfile
+          import os, json, base64, zipfile, shutil, tempfile
           from io import BytesIO
           raw = os.environ.get("LIBRARY_FILES", "")
           if not raw.strip():
@@ -78,10 +89,27 @@ jobs:
               for item in json.loads(raw):
                   name = (item.get("name") or "CustomLib").strip()
                   data = base64.b64decode(item.get("zip") or "")
-                  root = os.path.join(libs, name)
-                  os.makedirs(root, exist_ok=True)
-                  with zipfile.ZipFile(BytesIO(data)) as zf:
-                      zf.extractall(root)
+                  target = os.path.join(libs, name)
+                  os.makedirs(target, exist_ok=True)
+                  with tempfile.TemporaryDirectory() as tmp:
+                      with zipfile.ZipFile(BytesIO(data)) as zf:
+                          zf.extractall(tmp)
+                      entries = [e for e in os.listdir(tmp) if not e.startswith(".")]
+                      if len(entries) == 1 and os.path.isdir(os.path.join(tmp, entries[0])):
+                          root = os.path.join(tmp, entries[0])
+                          for n in os.listdir(root):
+                              src, dst = os.path.join(root, n), os.path.join(target, n)
+                              if os.path.isdir(src):
+                                  shutil.copytree(src, dst, dirs_exist_ok=True)
+                              else:
+                                  shutil.copy2(src, dst)
+                      else:
+                          for n in entries:
+                              src, dst = os.path.join(tmp, n), os.path.join(target, n)
+                              if os.path.isdir(src):
+                                  shutil.copytree(src, dst, dirs_exist_ok=True)
+                              else:
+                                  shutil.copy2(src, dst)
                   print("Installed", name)
           PY
 
